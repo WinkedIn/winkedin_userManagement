@@ -3,8 +3,11 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"gopkg.in/gomail.v2"
 	"time"
 
 	emailverifier "github.com/AfterShip/email-verifier"
@@ -43,7 +46,9 @@ func (e *EmailVerificationServiceImpl) SendVerificationEmail(ctx context.Context
 	}
 	e.rdb.Set(ctx, retriesKey, 0, 10*time.Minute)
 	fmt.Printf("Generated OTP for %s: %s\n", email, otp)
-	//logic for send email from winkedin email
+	if err := sendEmail("balanallamilli94944@gmail.com", "OTP Verification", ""); err != nil {
+		return "", err
+	}
 	return otp, nil
 }
 
@@ -51,7 +56,7 @@ func (e *EmailVerificationServiceImpl) VerifyOTP(ctx context.Context, email stri
 	otpKey := fmt.Sprintf("otp:%s", email)
 	retriesKey := fmt.Sprintf("retries:%s", email)
 	storedOTP, err := e.rdb.Get(ctx, otpKey).Result()
-	if err == redis.Nil || storedOTP != otp {
+	if errors.Is(err, redis.Nil) || storedOTP != otp {
 		retryCount, _ := e.rdb.Incr(ctx, retriesKey).Result()
 		if retryCount >= maxRetries {
 			e.rdb.Del(ctx, otpKey)
@@ -81,4 +86,24 @@ func (e *EmailVerificationServiceImpl) ValidateWorkEmail(ctx context.Context, em
 		return false, fmt.Errorf("email address failed verification")
 	}
 	return true, nil
+}
+
+func sendEmail(to string, subject string, body string) error {
+	smtpHost := "smtp.gmail.com"
+	smtpPort := 587
+	smtpUser := ""
+	smtpPass := ""
+	message := gomail.NewMessage()
+	message.SetHeader("From", smtpUser)
+	message.SetHeader("To", to)
+	message.SetHeader("Subject", subject)
+	message.SetBody("text/html", body)
+	dialer := gomail.NewDialer(smtpHost, smtpPort, smtpUser, smtpPass)
+	dialer.TLSConfig = &tls.Config{
+		InsecureSkipVerify: true,
+	}
+	if err := dialer.DialAndSend(message); err != nil {
+		return err
+	}
+	return nil
 }

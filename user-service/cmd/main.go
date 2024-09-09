@@ -11,71 +11,28 @@ import (
 	"syscall"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
-	"github.com/spf13/viper"
 	"github.com/winkedin/user-service/models"
 	"github.com/winkedin/user-service/services"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 var (
 	configFilePath = flag.String("config", "", "absolute path to the config file")
 )
 
-var (
-	db  *gorm.DB
-	rdb *redis.Client
-	ctx = context.Background()
-	v   = viper.New()
-)
-
-func initConfig() {
-	v.SetConfigFile(*configFilePath)
-	err := v.ReadInConfig()
-	if err != nil {
-		log.Fatalf("Error reading config file, %s", err)
-	}
-}
-
-func initDB() {
-	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%d sslmode=%s",
-		v.GetString("database.host"),
-		v.GetString("database.user"),
-		v.GetString("database.password"),
-		v.GetString("database.dbname"),
-		v.GetInt("database.port"),
-		v.GetString("database.sslmode"),
-	)
-	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
-	})
-	if err != nil {
-		log.Fatal("Failed to connect to the database: ", err)
-	}
-	db.AutoMigrate(&models.User{})
-}
-
-func initRedis() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", v.GetString("redis.host"), v.GetInt("redis.port")),
-		Password: v.GetString("redis.password"),
-		DB:       0,
-	})
-	_, err := rdb.Ping(ctx).Result()
-	if err != nil {
-		log.Fatal("Failed to connect to Redis: ", err)
-	}
-}
-
 func main() {
 	flag.Parse()
-	initConfig()
-	initDB()
-	initRedis()
+	v, err := services.GetConfig(*configFilePath)
+	if err != nil {
+		panic(err)
+	}
+	db, err := services.GetDBConnection(v, &models.User{})
+	if err != nil {
+		panic(err)
+	}
+	rdb, err := services.GetRedisConnection(context.Background(), *v)
+	if err != nil {
+		panic(err)
+	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			log.Println(fmt.Sprintf("%v", err))
@@ -105,13 +62,13 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		err := emailVerificationSVC.VerifyOTP(ctx, userVerifyRequest.Email, userVerifyRequest.OTP)
+		err := emailVerificationSVC.VerifyOTP(context.Background(), userVerifyRequest.Email, userVerifyRequest.OTP)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
 		}
 		var user models.User
-		rdb.HGetAll(ctx, fmt.Sprintf("user:%s", userVerifyRequest.Email)).Scan(&user)
+		rdb.HGetAll(context.Background(), fmt.Sprintf("user:%s", userVerifyRequest.Email)).Scan(&user)
 		if err := db.Create(&user).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store user data"})
 			return
@@ -125,7 +82,7 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		token, err := loginSvc.Login(ctx, userLoginRequest.Email, userLoginRequest.LinkedInJWT)
+		token, err := loginSvc.Login(context.Background(), userLoginRequest.Email, userLoginRequest.LinkedInJWT)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
@@ -139,7 +96,7 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		err := loginSvc.Logout(ctx, userLogoutRequest.UserID)
+		err := loginSvc.Logout(context.Background(), userLogoutRequest.UserID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
