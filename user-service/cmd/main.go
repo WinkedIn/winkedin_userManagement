@@ -11,20 +11,16 @@ import (
 	"syscall"
 
 	"github.com/gin-gonic/gin"
+	"github.com/winkedin/user-service/logger"
 	"github.com/winkedin/user-service/models"
 	"github.com/winkedin/user-service/services"
 )
 
-var (
-	configFilePath = flag.String("config", "", "absolute path to the config file")
-)
-
 func main() {
 	flag.Parse()
-	v, err := services.GetConfig(*configFilePath)
-	if err != nil {
-		panic(err)
-	}
+	// initialize logger
+	logger.Init()
+	v := services.GetConfig(*services.ConfigFilePath)
 	db, err := services.GetDBConnection(v, &models.User{})
 	if err != nil {
 		panic(err)
@@ -35,13 +31,15 @@ func main() {
 	}
 	defer func() {
 		if err := rdb.Close(); err != nil {
-			log.Println(fmt.Sprintf("%v", err))
+			log.Printf("%v", err)
 		}
 	}()
 	emailVerificationSVC := services.NewEmailVerificationService(rdb)
 	signupSVC := services.NewSignupService(db, rdb, emailVerificationSVC)
 	loginSvc := services.NewLoginService(db, rdb)
+	signinWithLinkedInSvc := services.NewSignInWithLinkedInService(db, rdb, loginSvc)
 	router := gin.Default()
+	router.Use(gin.Recovery())
 
 	router.POST("/signup", func(c *gin.Context) {
 		var user models.User
@@ -62,14 +60,18 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 			return
 		}
-		err := emailVerificationSVC.VerifyOTP(context.Background(), userVerifyRequest.Email, userVerifyRequest.OTP)
+		err = emailVerificationSVC.VerifyOTP(context.Background(), userVerifyRequest.Email, userVerifyRequest.OTP)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
 		}
 		var user models.User
-		rdb.HGetAll(context.Background(), fmt.Sprintf("user:%s", userVerifyRequest.Email)).Scan(&user)
-		if err := db.Create(&user).Error; err != nil {
+		err = rdb.HGetAll(context.Background(), fmt.Sprintf("user:%s", userVerifyRequest.Email)).Scan(&user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user data from Redis"})
+			return
+		}
+		if err = db.Create(&user).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store user data"})
 			return
 		}
@@ -102,6 +104,29 @@ func main() {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
+	})
+
+	// group callback routes
+	callback := router.Group("/callback")
+
+	// group OAuth callbacks
+	oAuthRoutes := callback.Group("/oauth")
+	// LinkedIn OAuth callback
+	oAuthRoutes.POST("/linkedin", func(c *gin.Context) {
+		// fetch LinkedIn auth code from query params
+		code := c.Query("code")
+		if code == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid auth code"})
+			return
+		}
+		// get LinkedIn profile and login
+		token, err := signinWithLinkedInSvc.GetLinkedInProfileAndLogin(context.Background(), code)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": token})
 	})
 	go func() {
 		if err := router.Run(fmt.Sprintf(":%d", v.GetInt("app.port"))); err != nil {

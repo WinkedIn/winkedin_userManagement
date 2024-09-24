@@ -1,13 +1,30 @@
 package services
 
-import "github.com/spf13/viper"
+import (
+	"flag"
+	"github.com/spf13/viper"
+	"sync"
+)
 
-func GetConfig(configFilePath string) (*viper.Viper, error) {
-	v := viper.New()
-	v.SetConfigFile(configFilePath)
-	err := v.ReadInConfig()
-	if err != nil {
-		return nil, err
-	}
-	return v, nil
+var (
+	ConfigFilePath = flag.String("config", "", "absolute path to the config file")
+	v              *viper.Viper
+)
+
+func GetConfig(configFilePath string) *viper.Viper {
+	var (
+		err  error
+		once sync.Once
+	)
+	once.Do(func() {
+		v = viper.New()
+		v.SetConfigFile(configFilePath)
+		err = v.ReadInConfig()
+		if err != nil {
+			// Log error
+			panic(err)
+		}
+	})
+
+	return v
 }

@@ -40,7 +40,7 @@ func (s *LoginServiceImpl) Login(ctx context.Context, email string, linkedInJWT 
 		return "", fmt.Errorf("user not found")
 	}
 	tokenKey := fmt.Sprintf("session:%s", user.ID)
-	err = s.rdb.Set(ctx, tokenKey, linkedInJWT, expirationTime.Sub(time.Now())).Err()
+	err = s.rdb.Set(ctx, tokenKey, linkedInJWT, time.Until(expirationTime)).Err()
 	if err != nil {
 		return "", fmt.Errorf("failed to store session token in Redis: %v", err)
 	}
