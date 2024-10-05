@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/winkedin/user-service/constants"
 	"github.com/winkedin/user-service/interfaces"
 	"github.com/winkedin/user-service/logger"
 	"github.com/winkedin/user-service/models"
@@ -29,9 +30,12 @@ var (
 )
 
 type SignInWithLinkedInServiceImpl struct {
-	rdb       *redis.Client
-	userStore user.UserStore
-	loginSvc  interfaces.LoginService
+	rdb          *redis.Client
+	userStore    user.UserStore
+	loginSvc     interfaces.LoginService
+	ClientId     string
+	ClientSecret string
+	RedirectURL  string
 }
 
 type HttpClient struct {
@@ -52,10 +56,14 @@ type LinkedInClient struct {
 }
 
 func NewSignInWithLinkedInService(db *gorm.DB, rdb *redis.Client, loginSvc interfaces.LoginService) interfaces.SignInWithLinkedInService {
+	v := GetConfig(*ConfigFilePath)
 	return &SignInWithLinkedInServiceImpl{
-		rdb:       rdb,
-		userStore: user.NewUserStore(db),
-		loginSvc:  loginSvc,
+		rdb:          rdb,
+		userStore:    user.NewUserStore(db),
+		loginSvc:     loginSvc,
+		ClientId:     v.GetString("linkedin.client_id"),
+		ClientSecret: v.GetString("linkedin.client_secret"),
+		RedirectURL:  v.GetString("linkedin.redirect_url"),
 	}
 
 }
@@ -99,6 +107,8 @@ func (c *LinkedInClient) GetAuthURL() string {
 // GetClient will exchange the code for an access token and
 // use it to create a new client with an authorized http client
 func (c *LinkedInClient) GetClient(ctx context.Context, code string) (*HttpClient, error) {
+	logger.LogFunctionPointWithContext(ctx, constants.LogFunctionEntry)
+	defer logger.LogFunctionPointWithContext(ctx, constants.LogFunctionExit)
 	oauth2Config := c.getOauth2Config(oauth2.Endpoint{
 		AuthURL:   oauth2AuthURL,
 		TokenURL:  oauth2TokenURL,
@@ -116,26 +126,21 @@ func (c *LinkedInClient) GetClient(ctx context.Context, code string) (*HttpClien
 }
 
 func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.Context, code string) (string, error) {
-	// log function entrypoint
-	logger.InfoLogger.Printf("entry-GetLinkedInProfileAndLogin ctx: %v, code: %v", ctx, code)
+	logger.LogFunctionPointWithContext(ctx, constants.LogFunctionEntry)
 
-	v := GetConfig(*ConfigFilePath)
-	// fetch LinkedIn client ID, secret, redirectURL from config
-	clientId := v.GetString("linkedin.client_id")
-	clientSecret := v.GetString("linkedin.client_secret")
-	redirectURL := v.GetString("linkedin.redirect_url")
-	if clientId == "" || clientSecret == "" || redirectURL == "" {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: LinkedIn client ID, secret, redirect URL not found in config")
+	// check if LinkedIn client ID, secret, redirect URL are present in config
+	if s.ClientId == "" || s.ClientSecret == "" || s.RedirectURL == "" {
+		logger.LogErrorWithContext(ctx, "LinkedIn client ID, secret, redirect URL not found in config")
 		return "", fmt.Errorf("LinkedIn client ID, secret, redirect URL not found in config")
 	}
 
 	// new LinkedIn client
-	client := NewLinkedInClient(clientId, clientSecret, []string{"r_liteprofile", "r_basicprofile", "r_emailaddress"}, redirectURL)
+	client := NewLinkedInClient(s.ClientId, s.ClientSecret, []string{"r_liteprofile", "r_basicprofile", "r_emailaddress"}, s.RedirectURL)
 
 	// new http client to make requests
 	httpClient, err := client.GetClient(ctx, code)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to create http client from LinkedIn client: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to create http client from LinkedIn client: %v", err)
 	}
 
@@ -144,7 +149,7 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	// fetch LinkedIn email address
 	emailResp, err := httpClient.Get(EndpointEmailAddress)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to get LinkedIn email address: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to get LinkedIn email address: %v", err)
 	}
 	defer emailResp.Body.Close()
@@ -152,7 +157,7 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	emailStruct := types.LinkedInEmailAddress{}
 	err = json.NewDecoder(emailResp.Body).Decode(&emailStruct)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to decode LinkedIn email address response: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to decode LinkedIn email address response: %v", err)
 	}
 
@@ -161,7 +166,7 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	// fetch LinkedIn profile
 	profileResp, err := httpClient.Get(EndpointProfile)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to get LinkedIn profile: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to get LinkedIn profile: %v", err)
 	}
 	defer profileResp.Body.Close()
@@ -170,29 +175,29 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	profileStruct := types.LinkedInProfile{}
 	err = json.NewDecoder(profileResp.Body).Decode(&profileStruct)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to decode LinkedIn profile response: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to decode LinkedIn profile response: %v", err)
 	}
 
 	// check if user exists
 	_, userExists, err := s.userStore.GetUserByEmail(ctx, emailAddress)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to check if user exists: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to check if user exists: %v", err)
 	}
 
 	// create user, login and return if user doesn't exist else update user and login
 	if !userExists {
-		_, err := s.userStore.CreateUserFromLinkedInProfile(ctx, &profileStruct, emailAddress)
+		_, err = s.userStore.CreateUserFromLinkedInProfile(ctx, &profileStruct, emailAddress)
 		if err != nil {
-			logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to create user from LinkedIn profile: %v", err)
+			logger.LogErrorWithContext(ctx, err.Error())
 			return "", fmt.Errorf("failed to create user from LinkedIn profile: %v", err)
 		}
 
 		// login user
 		token, err := s.loginSvc.Login(ctx, emailAddress, httpClient.OAuth2AccessToken.AccessToken)
 		if err != nil {
-			logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to login user: %v", err)
+			logger.LogErrorWithContext(ctx, err.Error())
 			return "", fmt.Errorf("failed to login user: %v", err)
 		}
 
@@ -203,7 +208,7 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	// fetch user from db
 	user, _, err := s.userStore.GetUserByEmail(ctx, emailAddress)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to get user by email: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to get user by email: %v", err)
 	}
 
@@ -237,9 +242,9 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 			Education:      dummyUser.Education,
 			ProfilePicture: profileStruct.ProfilePicture.DisplayImage,
 		}
-		err := s.userStore.UpdateUser(ctx, updatedUser)
+		err = s.userStore.UpdateUser(ctx, updatedUser)
 		if err != nil {
-			logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to update user from LinkedIn profile: %v", err)
+			logger.LogErrorWithContext(ctx, err.Error())
 			return "", fmt.Errorf("failed to update user from LinkedIn profile: %v", err)
 		}
 	}
@@ -247,8 +252,14 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 	// login user
 	token, err := s.loginSvc.Login(ctx, emailAddress, httpClient.OAuth2AccessToken.AccessToken)
 	if err != nil {
-		logger.ErrorLogger.Printf("exit-GetLinkedInProfileAndLogin error: failed to login user: %v", err)
+		logger.LogErrorWithContext(ctx, err.Error())
 		return "", fmt.Errorf("failed to login user: %v", err)
 	}
+
+	defer logger.LogFunctionPointWithContext(ctx, constants.LogFunctionExit)
 	return token, nil
 }
+
+// once user signs in using linkedin share the token with frontend and Fe will monitor the TTL for user login
+// use context in Db queries
+// remove the login service
