@@ -1,4 +1,4 @@
-package services
+package store
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ func GetDBConnection(v *viper.Viper, dbModels ...interface{}) (*gorm.DB, error) 
 		v.GetString("database.password"),
 		v.GetString("database.dbname"),
 		v.GetInt("database.port"),
-		v.GetBool("database.sslmode"),
+		v.GetString("database.sslmode"),
 	)
 	var err error
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
@@ -32,6 +32,7 @@ func GetDBConnection(v *viper.Viper, dbModels ...interface{}) (*gorm.DB, error) 
 	if err := sqlDB.Ping(); err != nil {
 		return nil, err
 	}
+	//nolint
 	db.AutoMigrate(dbModels)
 	return db, nil
 }
