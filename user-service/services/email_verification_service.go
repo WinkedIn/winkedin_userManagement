@@ -28,7 +28,7 @@ func NewEmailVerificationService(rdb *redis.Client) interfaces.EmailVerification
 	return &EmailVerificationServiceImpl{rdb: rdb, verifier: v}
 }
 
-func (e *EmailVerificationServiceImpl) generateOTP(length int) string {
+func GenerateOTP(length int) string {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		panic(err)
@@ -37,7 +37,7 @@ func (e *EmailVerificationServiceImpl) generateOTP(length int) string {
 }
 
 func (e *EmailVerificationServiceImpl) SendVerificationEmail(ctx context.Context, email string) (string, error) {
-	otp := e.generateOTP(6)
+	otp := GenerateOTP(6)
 	otpKey := fmt.Sprintf("otp:%s", email)
 	retriesKey := fmt.Sprintf("retries:%s", email)
 	err := e.rdb.Set(ctx, otpKey, otp, 10*time.Minute).Err()
