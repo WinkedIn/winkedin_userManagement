@@ -58,8 +58,7 @@ func main() {
 	wlog.InitLogger()
 	emailVerificationSVC := services.NewEmailVerificationService(rdb)
 	signupSVC := services.NewSignupService(db, rdb, emailVerificationSVC)
-	loginSvc := services.NewLoginService(db, rdb)
-	signInWithLinkedInSvc := services.NewSignInWithLinkedInService(db, rdb, loginSvc)
+	signInWithLinkedInSvc := services.NewSignInWithLinkedInService(db, rdb)
 	router := gin.Default()
 	router.Use(gin.Recovery())
 	router.Use(logger.SetLogger())
@@ -106,40 +105,6 @@ func main() {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "Account verified and created successfully!"})
-	})
-
-	router.POST("/login", func(c *gin.Context) {
-		ctx := extractRequestIdAndBuildContext(c)
-		var userLoginRequest models.UserLoginRequest
-		if err := c.ShouldBindJSON(&userLoginRequest); err != nil {
-			_ = c.Error(err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
-			return
-		}
-		token, err := loginSvc.Login(ctx, userLoginRequest.Email, userLoginRequest.LinkedInJWT)
-		if err != nil {
-			_ = c.Error(err)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": token})
-	})
-
-	router.POST("/logout", func(c *gin.Context) {
-		ctx := extractRequestIdAndBuildContext(c)
-		var userLogoutRequest models.UseLogoutRequest
-		if err := c.ShouldBindJSON(&userLogoutRequest); err != nil {
-			_ = c.Error(err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
-			return
-		}
-		err := loginSvc.Logout(ctx, userLogoutRequest.UserID)
-		if err != nil {
-			_ = c.Error(err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 	})
 
 	// group callback routes

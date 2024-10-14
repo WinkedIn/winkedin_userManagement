@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v4"
 	"net/http"
 	"time"
 
@@ -32,7 +33,6 @@ var (
 type SignInWithLinkedInServiceImpl struct {
 	rdb          *redis.Client
 	userStore    user.UserStore
-	loginSvc     interfaces.LoginService
 	ClientId     string
 	ClientSecret string
 	RedirectURL  string
@@ -55,12 +55,11 @@ type LinkedInClient struct {
 	redirectURL string
 }
 
-func NewSignInWithLinkedInService(db *gorm.DB, rdb *redis.Client, loginSvc interfaces.LoginService) interfaces.SignInWithLinkedInService {
+func NewSignInWithLinkedInService(db *gorm.DB, rdb *redis.Client) interfaces.SignInWithLinkedInService {
 	v := GetConfig(*ConfigFilePath)
 	return &SignInWithLinkedInServiceImpl{
 		rdb:          rdb,
 		userStore:    user.NewUserStore(db),
-		loginSvc:     loginSvc,
 		ClientId:     v.GetString("linkedin.client_id"),
 		ClientSecret: v.GetString("linkedin.client_secret"),
 		RedirectURL:  v.GetString("linkedin.redirect_url"),
@@ -194,14 +193,12 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 			return "", fmt.Errorf("failed to create user from LinkedIn profile: %v", err)
 		}
 
-		// login user
-		token, err := s.loginSvc.Login(ctx, emailAddress, httpClient.OAuth2AccessToken.AccessToken)
+		token, err := jwt.Parse(code, nil)
 		if err != nil {
-			logger.LogErrorWithContext(ctx, err.Error())
-			return "", fmt.Errorf("failed to login user: %v", err)
+			return "", fmt.Errorf("invalid LinkedIn token: %v", err)
 		}
 
-		return token, nil
+		return token.Raw, nil
 	}
 
 	// compare db data and new data
@@ -249,15 +246,13 @@ func (s *SignInWithLinkedInServiceImpl) GetLinkedInProfileAndLogin(ctx context.C
 		}
 	}
 
-	// login user
-	token, err := s.loginSvc.Login(ctx, emailAddress, httpClient.OAuth2AccessToken.AccessToken)
+	token, err := jwt.Parse(code, nil)
 	if err != nil {
-		logger.LogErrorWithContext(ctx, err.Error())
-		return "", fmt.Errorf("failed to login user: %v", err)
+		return "", fmt.Errorf("invalid LinkedIn token: %v", err)
 	}
 
 	defer logger.LogFunctionPointWithContext(ctx, constants.LogFunctionExit)
-	return token, nil
+	return token.Raw, nil
 }
 
 // once user signs in using linkedin share the token with frontend and Fe will monitor the TTL for user login
